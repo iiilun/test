@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>雙人射擊遊戲</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.2/p5.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: linear-gradient(to bottom, #87CEEB, #E0F6FF);
+      font-family: 'Noto Sans TC', sans-serif;
+    }
+    h1 {
+      color: #333;
+      font-size: 2.5em;
+      margin-bottom: 10px;
+    }
+    p {
+      color: #555;
+      font-size: 1.2em;
+      margin: 5px 0;
+      text-align: center;
+      max-width: 600px;
+    }
+    canvas {
+      border: 3px solid #333;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>雙人射擊遊戲</h1>
+  <p>玩家 1：使用 WASD 移動，Q 鍵射擊</p>
+  <p>玩家 2：使用方向鍵移動，空白鍵射擊</p>
+  <p>每 10 秒出現黃色補給包，拾取後射速提升 5 秒！</p>
+  <script>
+    let font;
+    let player1, player2;
+    let bullets1 = [];
+    let bullets2 = [];
+    let logs = [];
+    let powerUps = [];
+    let explosions = [];
+    let gameOver = false;
+    let showStartScreen = true;
+    let gameStarted = false;
+    let score1 = 0;
+    let score2 = 0;
+
+    // 預載入字型
+    function preload() {
+      font = loadFont('https://fonts.gstatic.com/s/notosanssc/v26/k3kIo84MPvpLmixcA63oeALZlaet9E3g-LbpxoLjH1E.woff2');
+    }
+
+    // 定義玩家類別
+    class Player {
+      constructor(startX, startY, col) {
+        this.x = startX;
+        this.y = startY;
+        this.speed = 30;
+        this.playerColor = col;
+        this.canShoot = true;
+        this.reloadTime = 0;
+        this.reloadProgress = 0;
+        this.hp = 5;
+        this.width = 50;
+        this.height = 50;
+        this.isPoweredUp = false;
+        this.powerUpTimer = 0;
+      }
+
+      move(direction) {
+        if (direction === 'W') this.y -= this.speed;
+        if (direction === 'S') this.y += this.speed;
+        if (direction === 'A') this.x -= this.speed;
+        if (direction === 'D') this.x += this.speed;
+      }
+
+      moveUp() { this.y -= this.speed; }
+      moveDown() { this.y += this.speed; }
+      moveLeft() { this.x -= this.speed; }
+      moveRight() { this.x += this.speed; }
+
+      decreaseHP() {
+        if (this.hp > 0) {
+          this.hp--;
+        }
+      }
+
+      displayHP() {
+        fill(255, 0, 0);
+        rect(this.x, this.y - 20, this.width, 10);
+        fill(0, 255, 0);
+        rect(this.x, this.y - 20, this.width * (this.hp / 5), 10);
+      }
+
+      display() {
+        fill(this.playerColor);
+        noStroke();
+        rect(this.x, this.y, 30, 30);
+        if (!this.canShoot) {
+          fill(200, 100, 0);
+          rect(this.x, this.y - 10, 30 * (this.reloadProgress / 100), 5);
+        }
+      }
+
+      updateReload() {
+        if (!this.canShoot) {
+          let reloadSpeed = this.isPoweredUp ? 200 : 100;
+          this.reloadProgress += reloadSpeed * (1 / 60.0);
+          if (this.reloadProgress >= 100) {
+            this.canShoot = true;
+            this.reloadProgress = 0;
+          }
+        }
+        if (this.isPoweredUp) {
+          this.powerUpTimer -= 1 / 60.0;
+          if (this.powerUpTimer <= 0) {
+            this.isPoweredUp = false;
+          }
+        }
+      }
+    }
+
+    // 定義爆炸類別
+    class Explosion {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.duration = 10;
+        this.timer = 0;
+      }
+
+      update() {
+        this.timer++;
+      }
+
+      display() {
+        noStroke();
+        fill(255, 200, 0, 150 - this.timer * 10);
+        ellipse(this.x, this.y, 30 + this.timer * 2, 30 + this.timer * 2);
+      }
+
+      isDone() {
+        return this.timer >= this.duration;
+      }
+    }
+
+    // 定義子彈類別
+    class Bullet {
+      constructor(startX, startY, col, bulletSpeed) {
+        this.x = startX;
+        this.y = startY;
+        this.bulletColor = col;
+        this.speed = bulletSpeed;
+        this.isActive = true;
+      }
+
+      update() {
+        if (this.isActive) {
+          this.x += this.speed;
+        }
+      }
+
+      display() {
+        if (this.isActive) {
+          fill(this.bulletColor);
+          noStroke();
+          ellipse(this.x, this.y, 10, 10);
+        }
+      }
+
+      checkCollision(p) {
+        return this.isActive && dist(this.x, this.y, p.x, p.y) < 20;
+      }
+    }
+
+    // 定義漂流木類別
+    class Log {
+      constructor(startX, startY) {
+        this.x = startX;
+        this.y = startY;
+        this.w = random(30, 70);
+        this.h = random(30, 150);
+        this.speed = 2;
+        this.isActive = true;
+      }
+
+      update() {
+        this.y += this.speed;
+        if (this.y > height) {
+          this.isActive = false;
+        }
+      }
+
+      display() {
+        fill(139, 69, 19);
+        noStroke();
+        rect(this.x, this.y, this.w, this.h);
+      }
+
+      collidesWith(b) {
+        return b.isActive &&
+               b.x > this.x && b.x < this.x + this.w &&
+               b.y > this.y && b.y < this.y + this.h;
+      }
+    }
+
+    // 定義補給包類別
+    class PowerUp {
+      constructor(startX, startY) {
+        this.x = startX;
+        this.y = startY;
+        this.isActive = true;
+      }
+
+      display() {
+        if (this.isActive) {
+          fill(255, 255, 0);
+          noStroke();
+          rect(this.x, this.y, 20, 20);
+        }
+      }
+
+      checkCollision(p) {
+        return this.isActive &&
+               p.x + 30 > this.x && p.x < this.x + 20 &&
+               p.y + 30 > this.y && p.y < this.y + 20;
+      }
+    }
+
+    function setup() {
+      createCanvas(600, 600);
+      textFont(font);
+      player1 = new Player(100, 100, color(255, 0, 0));
+      player2 = new Player(500, 100, color(0, 0, 255));
+    }
+
+    function draw() {
+      background(255);
+
+      if (showStartScreen) {
+        textAlign(CENTER, CENTER);
+        textSize(32);
+        fill(0);
+        text("雙人射擊遊戲", width / 2, height / 2 - 60);
+        textSize(20);
+        text("按 ENTER 開始遊戲", width / 2, height / 2);
+        return;
+      }
+
+      if (gameOver) {
+        textSize(32);
+        textAlign(CENTER, CENTER);
+        fill(0);
+        text("Game Over!", width / 2, height / 2 - 40);
+        if (player1.hp <= 0) {
+          text("Player 2 Wins!", width / 2, height / 2);
+        } else if (player2.hp <= 0) {
+          text("Player 1 Wins!", width / 2, height / 2);
+        }
+        textSize(20);
+        text("按 R 鍵重新開始", width / 2, height / 2 + 40);
+        return;
+      }
+
+      // 畫出河流背景
+      fill(173, 216, 230);
+      noStroke();
+      rect(width / 2 - 40, 0, 80, height);
+
+      // 顯示玩家血量條
+      player1.displayHP();
+      player2.displayHP();
+
+      // 更新爆炸動畫
+      for (let i = explosions.length - 1; i >= 0; i--) {
+        let e = explosions[i];
+        e.update();
+        if (e.isDone()) {
+          explosions.splice(i, 1);
+        } else {
+          e.display();
+        }
+      }
+
+      // 每90幀新增一根漂流木
+      if (frameCount % 90 === 0) {
+        let logX = width / 2 - 20;
+        let logY = -10;
+        logs.push(new Log(logX, logY));
+      }
+
+      // 每10秒（600幀）生成一個補給包
+      if (frameCount % 600 === 0) {
+        let powerUpX = random(50, width - 50);
+        let powerUpY = random(50, height - 50);
+        powerUps.push(new PowerUp(powerUpX, powerUpY));
+      }
+
+      // 更新與顯示漂流木
+      for (let i = logs.length - 1; i >= 0; i--) {
+        let log = logs[i];
+        log.update();
+        log.display();
+        if (!log.isActive) {
+          logs.splice(i, 1);
+        }
+      }
+
+      // 更新與顯示補給包
+      for (let i = powerUps.length - 1; i >= 0; i--) {
+        let p = powerUps[i];
+        p.display();
+        if (p.checkCollision(player1)) {
+          player1.isPoweredUp = true;
+          player1.powerUpTimer = 5.0;
+          p.isActive = false;
+        } else if (p.checkCollision(player2)) {
+          player2.isPoweredUp = true;
+          player2.powerUpTimer = 5.0;
+          p.isActive = false;
+        }
+        if (!p.isActive) {
+          powerUps.splice(i, 1);
+        }
+      }
+
+      // 更新與顯示玩家
+      player1.updateReload();
+      player2.updateReload();
+      player1.display();
+      player2.display();
+
+      // 處理玩家1的子彈
+      for (let i = bullets1.length - 1; i >= 0; i--) {
+        let b = bullets1[i];
+        b.update();
+        b.display();
+
+        for (let log of logs) {
+          if (log.collidesWith(b)) b.isActive = false;
+        }
+
+        if (b.checkCollision(player2)) {
+          player2.decreaseHP();
+          explosions.push(new Explosion(b.x, b.y));
+          bullets1.splice(i, 1);
+          continue;
+        }
+
+        if (!b.isActive) {
+          bullets1.splice(i, 1);
+        }
+      }
+
+      // 處理玩家2的子彈
+      for (let i = bullets2.length - 1; i >= 0; i--) {
+        let b = bullets2[i];
+        b.update();
+        b.display();
+
+        for (let log of logs) {
+          if (log.collidesWith(b)) b.isActive = false;
+        }
+
+        if (b.checkCollision(player1)) {
+          player1.decreaseHP();
+          explosions.push(new Explosion(b.x, b.y));
+          bullets2.splice(i, 1);
+          continue;
+        }
+
+        if (!b.isActive) {
+          bullets2.splice(i, 1);
+        }
+      }
+
+      // 檢查是否有玩家血量為0
+      if (player1.hp <= 0 || player2.hp <= 0) {
+        gameOver = true;
+      }
+
+      // 處理玩家移動（連續輸入）
+      if (keyIsDown(87)) player1.move('W'); // W
+      if (keyIsDown(83)) player1.move('S'); // S
+      if (keyIsDown(65)) player1.move('A'); // A
+      if (keyIsDown(68)) player1.move('D'); // D
+      if (keyIsDown(UP_ARROW)) player2.moveUp();
+      if (keyIsDown(DOWN_ARROW)) player2.moveDown();
+      if (keyIsDown(LEFT_ARROW)) player2.moveLeft();
+      if (keyIsDown(RIGHT_ARROW)) player2.moveRight();
+    }
+
+    function keyPressed() {
+      if (showStartScreen && keyCode === ENTER) {
+        showStartScreen = false;
+        gameStarted = true;
+        return;
+      }
+
+      if (gameOver && (key === 'r' || key === 'R')) {
+        restartGame();
+        return;
+      }
+
+      // 玩家1發射子彈
+      if ((key === 'q' || key === 'Q') && player1.canShoot) {
+        bullets1.push(new Bullet(player1.x + 30, player1.y + 15, color(255, 0, 0), 10));
+        player1.canShoot = false;
+        player1.reloadTime = millis();
+      }
+
+      // 玩家2發射子彈
+      if (key === ' ' && player2.canShoot) {
+        bullets2.push(new Bullet(player2.x - 10, player2.y + 15, color(0, 0, 255), -10));
+        player2.canShoot = false;
+        player2.reloadTime = millis();
+      }
+    }
+
+    function restartGame() {
+      gameOver = false;
+      player1.hp = 5;
+      player2.hp = 5;
+      bullets1 = [];
+      bullets2 = [];
+      logs = [];
+      powerUps = [];
+      player1 = new Player(100, 100, color(255, 0, 0));
+      player2 = new Player(500, 100, color(0, 0, 255));
+    }
+  </script>
+</body>
+</html>
